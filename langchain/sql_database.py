@@ -1,8 +1,9 @@
 """SQLAlchemy wrapper around a database."""
 from __future__ import annotations
+from abc import ABC, abstractmethod
 
 import warnings
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import sqlalchemy
 from sqlalchemy import (
@@ -27,6 +28,170 @@ def _format_index(index: sqlalchemy.engine.interfaces.ReflectedIndex) -> str:
     )
 
 
+class SQLLikeDatabase(ABC):
+    """Abstract class for SQLLike sources"""
+
+    def __init__(self, 
+                 sample_rows_in_table_info: int,
+                 indexes_in_table_info: bool,
+                 include_tables: Optional[List[str]],
+                 ignore_tables: Optional[List[str]],
+                 custom_table_info: Optional[Dict[str]],
+                 view_support: bool):
+
+        self._sample_rows_in_table_info = sample_rows_in_table_info
+        self._indexes_in_table_info = indexes_in_table_info
+        self._view_support = view_support
+
+        self._all_tables = set(self.get_all_table_names())
+        self._usable_tables = set(self.get_usable_table_names()) or self._all_tables
+
+        if include_tables and ignore_tables:
+            raise ValueError("Cannot specify both include_tables and ignore_tables")
+
+        self._include_tables = set(include_tables or [])
+        self._ignore_tables = set(ignore_tables or [])
+
+        if self._include_tables:
+            missing_tables = self._include_tables - self._all_tables
+            if missing_tables:
+                raise ValueError(
+                    f"include_tables {missing_tables} not found in database"
+                )
+        
+        if self._ignore_tables:
+            missing_tables = self._ignore_tables - self._all_tables
+            if missing_tables:
+                raise ValueError(
+                    f"ignore_tables {missing_tables} not found in database"
+                )
+
+        if self._custom_table_info:
+            # only keep the tables that are also present in the database
+            intersection = set(self._custom_table_info).intersection(self._all_tables)
+            self._custom_table_info = dict(
+                (table, self._custom_table_info[table])
+                for table in self._custom_table_info
+                if table in intersection
+            )            
+
+    @abstractmethod
+    def get_all_table_names() -> Iterable[str]:
+        """Get names of all tables"""
+        pass
+
+    @abstractmethod
+    def get_usable_table_names(self) -> Iterable[str]:
+        """Get names of tables available."""
+        pass
+
+    def get_table_names(self) -> Iterable[str]:
+        """Get names of tables available."""
+        warnings.warn(
+            "This method is deprecated - please use `get_usable_table_names`."
+        )
+        return self.get_usable_table_names()
+    
+    @property
+    def table_info(self) -> str:
+        """Information about all tables in the database."""
+        return self.get_table_info()
+
+    @abstractmethod
+    def _get_create_table(self, table_name: str) -> str:
+        pass
+
+    def _get_custom_table_info(self, table_name: str) -> Optional[str]:
+        if self._custom_table_info:
+            return self._custom_table_info.get(table_name)
+    
+    @abstractmethod
+    def _get_table_indexes(self, table_name: str) -> str:
+        pass
+    
+    @abstractmethod
+    def _get_columns(self, table_name: str) -> str:
+        pass
+
+    @abstractmethod
+    def _get_sample_rows(self, table_name: str) -> str:
+        pass
+
+    def get_table_info(self, table_names: Optional[List[str]] = None) -> str:
+        """Get information about specified tables.
+
+        Follows best practices as specified in: Rajkumar et al, 2022
+        (https://arxiv.org/abs/2204.00498)
+
+        If `sample_rows_in_table_info`, the specified number of sample rows will be
+        appended to each table description. This can increase performance as
+        demonstrated in the paper.
+        """
+        all_table_names = self.get_usable_table_names()
+        if table_names is not None:
+            missing_tables = set(table_names).difference(all_table_names)
+            if missing_tables:
+                raise ValueError(f"table_names {missing_tables} not found in database")
+            all_table_names = table_names
+
+        tables = []
+        for table in all_table_names:
+            custom_table_info = self._get_custom_table_info(table)
+            if custom_table_info:
+                # if we have custom info, use that
+                tables.append(custom_table_info)
+            
+            else:
+                # add create table command
+                table_info = self._get_create_table(table)
+                if self._indexes_in_table_info or self._sample_rows_in_table_info:
+                    table_info += "\n\n/*"
+                    if self._indexes_in_table_info:
+                        table_info += f"\nTable Indexes:"
+                        table_info += f"\n{self._get_table_indexes(table)}\n"
+                    if self._sample_rows_in_table_info:
+                        table_info += f"\n{self._sample_rows_in_table_info} rows from {table} table:"
+                        table_info += f"\n{self._get_columns(table)}"
+                        table_info += f"\n{self._get_sample_rows(table)}\n"
+                    table_info += "*/"
+                tables.append(table_info)
+        final_str = "\n\n".join(tables)
+        return final_str
+    
+    def get_table_info_no_throw(self, table_names: Optional[List[str]] = None) -> str:
+        """Get information about specified tables.
+
+        Follows best practices as specified in: Rajkumar et al, 2022
+        (https://arxiv.org/abs/2204.00498)
+
+        If `sample_rows_in_table_info`, the specified number of sample rows will be
+        appended to each table description. This can increase performance as
+        demonstrated in the paper.
+        """
+        try:
+            return self.get_table_info(table_names)
+        except ValueError as e:
+            """Format the error message"""
+            return f"Error: {e}"
+
+    @abstractmethod
+    def run(self, command: str, fetch: str = "all") -> str:
+        pass
+
+    def run_no_throw(self, command: str, fetch: str = "all") -> str:
+        """Execute a SQL command and return a string representing the results.
+
+        If the statement returns rows, a string of the results is returned.
+        If the statement returns no rows, an empty string is returned.
+
+        If the statement throws an error, the error message is returned.
+        """
+        try:
+            return self.run(command, fetch)
+        except SQLAlchemyError as e:
+            """Format the error message"""
+            return f"Error: {e}"
+
 class SQLDatabase:
     """SQLAlchemy wrapper around a database."""
 
@@ -45,58 +210,18 @@ class SQLDatabase:
         """Create engine from database URI."""
         self._engine = engine
         self._schema = schema
-        if include_tables and ignore_tables:
-            raise ValueError("Cannot specify both include_tables and ignore_tables")
+        self._inspector = inspect(self._engine)    
 
-        self._inspector = inspect(self._engine)
-
-        # including view support by adding the views as well as tables to the all
-        # tables list if view_support is True
-        self._all_tables = set(
-            self._inspector.get_table_names(schema=schema)
-            + (self._inspector.get_view_names(schema=schema) if view_support else [])
+        super().__init__(
+            ignore_tables=ignore_tables,
+            include_tables=include_tables,
+            sample_rows_in_table_info=sample_rows_in_table_info, 
+            indexes_in_table_info=indexes_in_table_info,
+            custom_table_info=custom_table_info,
+            view_support=view_support,
         )
 
-        self._include_tables = set(include_tables) if include_tables else set()
-        if self._include_tables:
-            missing_tables = self._include_tables - self._all_tables
-            if missing_tables:
-                raise ValueError(
-                    f"include_tables {missing_tables} not found in database"
-                )
-        self._ignore_tables = set(ignore_tables) if ignore_tables else set()
-        if self._ignore_tables:
-            missing_tables = self._ignore_tables - self._all_tables
-            if missing_tables:
-                raise ValueError(
-                    f"ignore_tables {missing_tables} not found in database"
-                )
-        usable_tables = self.get_usable_table_names()
-        self._usable_tables = set(usable_tables) if usable_tables else self._all_tables
-
-        if not isinstance(sample_rows_in_table_info, int):
-            raise TypeError("sample_rows_in_table_info must be an integer")
-
-        self._sample_rows_in_table_info = sample_rows_in_table_info
-        self._indexes_in_table_info = indexes_in_table_info
-
-        self._custom_table_info = custom_table_info
-        if self._custom_table_info:
-            if not isinstance(self._custom_table_info, dict):
-                raise TypeError(
-                    "table_info must be a dictionary with table names as keys and the "
-                    "desired table info as values"
-                )
-            # only keep the tables that are also present in the database
-            intersection = set(self._custom_table_info).intersection(self._all_tables)
-            self._custom_table_info = dict(
-                (table, self._custom_table_info[table])
-                for table in self._custom_table_info
-                if table in intersection
-            )
-
         self._metadata = metadata or MetaData()
-        # including view support if view_support = true
         self._metadata.reflect(
             views=view_support,
             bind=self._engine,
@@ -216,83 +341,46 @@ class SQLDatabase:
         """Return string representation of dialect to use."""
         return self._engine.dialect.name
 
+    def get_all_table_names(self) -> Iterable[str]:
+        """Get names of all tables."""
+        self._all_tables = set(self._inspector.get_table_names(schema=self._schema))
+        if self._view_support:
+            self._all_tables.update(self._inspector.get_view_names(schema=self._schema))
+
     def get_usable_table_names(self) -> Iterable[str]:
         """Get names of tables available."""
         if self._include_tables:
             return self._include_tables
-        return self._all_tables - self._ignore_tables
+        
+        usable_tables = self._all_tables - self._ignore_tables
 
-    def get_table_names(self) -> Iterable[str]:
-        """Get names of tables available."""
-        warnings.warn(
-            "This method is deprecated - please use `get_usable_table_names`."
-        )
-        return self.get_usable_table_names()
+        if self.dialect == "sqlite":
+            return filter(lambda table_name: not table_name.startswith("sqlite_"), usable_tables)
+        return usable_tables
 
-    @property
-    def table_info(self) -> str:
-        """Information about all tables in the database."""
-        return self.get_table_info()
+    def __get_table(self, table_name: str) -> Table:
+        for table in self._metadata.sorted_tables:
+            if table.name == table_name:
+                return table
 
-    def get_table_info(self, table_names: Optional[List[str]] = None) -> str:
-        """Get information about specified tables.
+    def _get_create_table(self, table_name: str) -> str:
+        table = self.__get_table(table_name)
+        create_table = str(CreateTable(table).compile(self._engine))
+        return create_table.rstrip()
 
-        Follows best practices as specified in: Rajkumar et al, 2022
-        (https://arxiv.org/abs/2204.00498)
+    def _get_table_indexes(self, table_name: str) -> str:
+        indexes = self._inspector.get_indexes(table_name)
+        return "\n".join(map(_format_index, indexes))
+    
+    def _get_columns(self, table_name: str) -> str:
+        table = self.__get_table(table_name)
+        return "\t".join([col.name for col in table.columns])
 
-        If `sample_rows_in_table_info`, the specified number of sample rows will be
-        appended to each table description. This can increase performance as
-        demonstrated in the paper.
-        """
-        all_table_names = self.get_usable_table_names()
-        if table_names is not None:
-            missing_tables = set(table_names).difference(all_table_names)
-            if missing_tables:
-                raise ValueError(f"table_names {missing_tables} not found in database")
-            all_table_names = table_names
+    def _get_sample_rows(self, table_name: str) -> str:
+        table = self.__get_table(table_name)
 
-        meta_tables = [
-            tbl
-            for tbl in self._metadata.sorted_tables
-            if tbl.name in set(all_table_names)
-            and not (self.dialect == "sqlite" and tbl.name.startswith("sqlite_"))
-        ]
-
-        tables = []
-        for table in meta_tables:
-            if self._custom_table_info and table.name in self._custom_table_info:
-                tables.append(self._custom_table_info[table.name])
-                continue
-
-            # add create table command
-            create_table = str(CreateTable(table).compile(self._engine))
-            table_info = f"{create_table.rstrip()}"
-            has_extra_info = (
-                self._indexes_in_table_info or self._sample_rows_in_table_info
-            )
-            if has_extra_info:
-                table_info += "\n\n/*"
-            if self._indexes_in_table_info:
-                table_info += f"\n{self._get_table_indexes(table)}\n"
-            if self._sample_rows_in_table_info:
-                table_info += f"\n{self._get_sample_rows(table)}\n"
-            if has_extra_info:
-                table_info += "*/"
-            tables.append(table_info)
-        final_str = "\n\n".join(tables)
-        return final_str
-
-    def _get_table_indexes(self, table: Table) -> str:
-        indexes = self._inspector.get_indexes(table.name)
-        indexes_formatted = "\n".join(map(_format_index, indexes))
-        return f"Table Indexes:\n{indexes_formatted}"
-
-    def _get_sample_rows(self, table: Table) -> str:
         # build the select command
         command = select(table).limit(self._sample_rows_in_table_info)
-
-        # save the columns in string format
-        columns_str = "\t".join([col.name for col in table.columns])
 
         try:
             # get the sample rows
@@ -310,12 +398,8 @@ class SQLDatabase:
         # 'ProgrammingError' is returned
         except ProgrammingError:
             sample_rows_str = ""
+        return sample_rows_str
 
-        return (
-            f"{self._sample_rows_in_table_info} rows from {table.name} table:\n"
-            f"{columns_str}\n"
-            f"{sample_rows_str}"
-        )
 
     def run(self, command: str, fetch: str = "all") -> str:
         """Execute a SQL command and return a string representing the results.
@@ -341,33 +425,3 @@ class SQLDatabase:
                     raise ValueError("Fetch parameter must be either 'one' or 'all'")
                 return str(result)
         return ""
-
-    def get_table_info_no_throw(self, table_names: Optional[List[str]] = None) -> str:
-        """Get information about specified tables.
-
-        Follows best practices as specified in: Rajkumar et al, 2022
-        (https://arxiv.org/abs/2204.00498)
-
-        If `sample_rows_in_table_info`, the specified number of sample rows will be
-        appended to each table description. This can increase performance as
-        demonstrated in the paper.
-        """
-        try:
-            return self.get_table_info(table_names)
-        except ValueError as e:
-            """Format the error message"""
-            return f"Error: {e}"
-
-    def run_no_throw(self, command: str, fetch: str = "all") -> str:
-        """Execute a SQL command and return a string representing the results.
-
-        If the statement returns rows, a string of the results is returned.
-        If the statement returns no rows, an empty string is returned.
-
-        If the statement throws an error, the error message is returned.
-        """
-        try:
-            return self.run(command, fetch)
-        except SQLAlchemyError as e:
-            """Format the error message"""
-            return f"Error: {e}"
