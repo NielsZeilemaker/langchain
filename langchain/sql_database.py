@@ -85,12 +85,6 @@ class SQLLikeDatabase(ABC):
         """Get names of tables available."""
         pass
 
-    def get_table_names(self) -> Iterable[str]:
-        """Get names of tables available."""
-        warnings.warn(
-            "This method is deprecated - please use `get_usable_table_names`."
-        )
-        return self.get_usable_table_names()
     
     @property
     def table_info(self) -> str:
@@ -142,7 +136,7 @@ class SQLLikeDatabase(ABC):
                 tables.append(custom_table_info)
             
             else:
-                # add create table command
+                # else, add create table command
                 table_info = self._get_create_table(table)
                 if self._indexes_in_table_info or self._sample_rows_in_table_info:
                     table_info += "\n\n/*"
@@ -340,6 +334,13 @@ class SQLDatabase:
     def dialect(self) -> str:
         """Return string representation of dialect to use."""
         return self._engine.dialect.name
+    
+    def get_table_names(self) -> Iterable[str]:
+        """Get names of tables available."""
+        warnings.warn(
+            "This method is deprecated - please use `get_usable_table_names`."
+        )
+        return self.get_usable_table_names()
 
     def get_all_table_names(self) -> Iterable[str]:
         """Get names of all tables."""
@@ -392,14 +393,12 @@ class SQLDatabase:
                 )
 
             # save the sample rows in string format
-            sample_rows_str = "\n".join(["\t".join(row) for row in sample_rows])
+            return "\n".join(["\t".join(row) for row in sample_rows])
 
         # in some dialects when there are no rows in the table a
         # 'ProgrammingError' is returned
         except ProgrammingError:
-            sample_rows_str = ""
-        return sample_rows_str
-
+            return ""
 
     def run(self, command: str, fetch: str = "all") -> str:
         """Execute a SQL command and return a string representing the results.
