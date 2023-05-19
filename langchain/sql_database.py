@@ -1,9 +1,9 @@
 """SQLAlchemy wrapper around a database."""
 from __future__ import annotations
-from abc import ABC, abstractmethod
 
 import warnings
-from typing import Any, Dict, Iterable, List, Optional
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Iterable, List, Optional, cast
 
 import sqlalchemy
 from sqlalchemy import (
@@ -31,14 +31,15 @@ def _format_index(index: sqlalchemy.engine.interfaces.ReflectedIndex) -> str:
 class SQLLikeDatabase(ABC):
     """Abstract class for SQLLike sources"""
 
-    def __init__(self, 
-                 sample_rows_in_table_info: int,
-                 indexes_in_table_info: bool,
-                 include_tables: Optional[List[str]],
-                 ignore_tables: Optional[List[str]],
-                 custom_table_info: Optional[Dict[str]],
-                 view_support: bool):
-
+    def __init__(
+        self,
+        sample_rows_in_table_info: int,
+        indexes_in_table_info: bool,
+        include_tables: Optional[List[str]],
+        ignore_tables: Optional[List[str]],
+        custom_table_info: Optional[Dict[str, str]],
+        view_support: bool,
+    ):
         self._sample_rows_in_table_info = sample_rows_in_table_info
         self._indexes_in_table_info = indexes_in_table_info
         self._view_support = view_support
@@ -51,6 +52,7 @@ class SQLLikeDatabase(ABC):
 
         self._include_tables = set(include_tables or [])
         self._ignore_tables = set(ignore_tables or [])
+        self._custom_table_info = custom_table_info
 
         if self._include_tables:
             missing_tables = self._include_tables - self._all_tables
@@ -58,7 +60,7 @@ class SQLLikeDatabase(ABC):
                 raise ValueError(
                     f"include_tables {missing_tables} not found in database"
                 )
-        
+
         if self._ignore_tables:
             missing_tables = self._ignore_tables - self._all_tables
             if missing_tables:
@@ -73,10 +75,10 @@ class SQLLikeDatabase(ABC):
                 (table, self._custom_table_info[table])
                 for table in self._custom_table_info
                 if table in intersection
-            )            
+            )
 
     @abstractmethod
-    def get_all_table_names() -> Iterable[str]:
+    def get_all_table_names(self) -> Iterable[str]:
         """Get names of all tables"""
         pass
 
@@ -85,7 +87,6 @@ class SQLLikeDatabase(ABC):
         """Get names of tables available."""
         pass
 
-    
     @property
     def table_info(self) -> str:
         """Information about all tables in the database."""
@@ -96,13 +97,12 @@ class SQLLikeDatabase(ABC):
         pass
 
     def _get_custom_table_info(self, table_name: str) -> Optional[str]:
-        if self._custom_table_info:
-            return self._custom_table_info.get(table_name)
-    
+        return self._custom_table_info.get(table_name) if self._custom_table_info else None
+
     @abstractmethod
     def _get_table_indexes(self, table_name: str) -> str:
         pass
-    
+
     @abstractmethod
     def _get_columns(self, table_name: str) -> str:
         pass
@@ -134,7 +134,7 @@ class SQLLikeDatabase(ABC):
             if custom_table_info:
                 # if we have custom info, use that
                 tables.append(custom_table_info)
-            
+
             else:
                 # else, add create table command
                 table_info = self._get_create_table(table)
@@ -151,7 +151,7 @@ class SQLLikeDatabase(ABC):
                 tables.append(table_info)
         final_str = "\n\n".join(tables)
         return final_str
-    
+
     def get_table_info_no_throw(self, table_names: Optional[List[str]] = None) -> str:
         """Get information about specified tables.
 
@@ -186,7 +186,8 @@ class SQLLikeDatabase(ABC):
             """Format the error message"""
             return f"Error: {e}"
 
-class SQLDatabase:
+
+class SQLDatabase(SQLLikeDatabase):
     """SQLAlchemy wrapper around a database."""
 
     def __init__(
@@ -204,12 +205,12 @@ class SQLDatabase:
         """Create engine from database URI."""
         self._engine = engine
         self._schema = schema
-        self._inspector = inspect(self._engine)    
+        self._inspector = inspect(self._engine)
 
         super().__init__(
             ignore_tables=ignore_tables,
             include_tables=include_tables,
-            sample_rows_in_table_info=sample_rows_in_table_info, 
+            sample_rows_in_table_info=sample_rows_in_table_info,
             indexes_in_table_info=indexes_in_table_info,
             custom_table_info=custom_table_info,
             view_support=view_support,
@@ -334,7 +335,7 @@ class SQLDatabase:
     def dialect(self) -> str:
         """Return string representation of dialect to use."""
         return self._engine.dialect.name
-    
+
     def get_table_names(self) -> Iterable[str]:
         """Get names of tables available."""
         warnings.warn(
@@ -347,38 +348,42 @@ class SQLDatabase:
         self._all_tables = set(self._inspector.get_table_names(schema=self._schema))
         if self._view_support:
             self._all_tables.update(self._inspector.get_view_names(schema=self._schema))
+        return self._all_tables
 
     def get_usable_table_names(self) -> Iterable[str]:
         """Get names of tables available."""
         if self._include_tables:
             return self._include_tables
-        
+
         usable_tables = self._all_tables - self._ignore_tables
 
         if self.dialect == "sqlite":
-            return filter(lambda table_name: not table_name.startswith("sqlite_"), usable_tables)
+            return filter(
+                lambda table_name: not table_name.startswith("sqlite_"), usable_tables
+            )
         return usable_tables
 
-    def __get_table(self, table_name: str) -> Table:
+    def __get_table(self, table_name: str) -> Optional[Table]:
         for table in self._metadata.sorted_tables:
             if table.name == table_name:
                 return table
+        return None
 
     def _get_create_table(self, table_name: str) -> str:
-        table = self.__get_table(table_name)
+        table = cast(Table, self.__get_table(table_name))
         create_table = str(CreateTable(table).compile(self._engine))
         return create_table.rstrip()
 
     def _get_table_indexes(self, table_name: str) -> str:
         indexes = self._inspector.get_indexes(table_name)
         return "\n".join(map(_format_index, indexes))
-    
+
     def _get_columns(self, table_name: str) -> str:
-        table = self.__get_table(table_name)
+        table = cast(Table, self.__get_table(table_name))
         return "\t".join([col.name for col in table.columns])
 
     def _get_sample_rows(self, table_name: str) -> str:
-        table = self.__get_table(table_name)
+        table = cast(Table, self.__get_table(table_name))
 
         # build the select command
         command = select(table).limit(self._sample_rows_in_table_info)
