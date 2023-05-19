@@ -44,15 +44,16 @@ class SQLLikeDatabase(ABC):
         self._indexes_in_table_info = indexes_in_table_info
         self._view_support = view_support
 
-        self._all_tables = set(self.get_all_table_names())
-        self._usable_tables = set(self.get_usable_table_names()) or self._all_tables
-
         if include_tables and ignore_tables:
             raise ValueError("Cannot specify both include_tables and ignore_tables")
 
         self._include_tables = set(include_tables or [])
         self._ignore_tables = set(ignore_tables or [])
         self._custom_table_info = custom_table_info
+
+        self._all_tables = set(self.get_all_table_names())
+        self._usable_tables = set(self.get_usable_table_names()) or self._all_tables
+
 
         if self._include_tables:
             missing_tables = self._include_tables - self._all_tables

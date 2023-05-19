@@ -5,7 +5,7 @@ from pydantic import Field
 
 from langchain.agents.agent_toolkits.base import BaseToolkit
 from langchain.base_language import BaseLanguageModel
-from langchain.sql_database import SQLDatabase
+from langchain.sql_database import SQLLikeDatabase
 from langchain.tools import BaseTool
 from langchain.tools.sql_database.tool import (
     InfoSQLDatabaseTool,
@@ -18,7 +18,7 @@ from langchain.tools.sql_database.tool import (
 class SQLDatabaseToolkit(BaseToolkit):
     """Toolkit for interacting with SQL databases."""
 
-    db: SQLDatabase = Field(exclude=True)
+    db: SQLLikeDatabase = Field(exclude=True)
     llm: BaseLanguageModel = Field(exclude=True)
 
     @property

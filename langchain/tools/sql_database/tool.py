@@ -11,7 +11,7 @@ from langchain.callbacks.manager import (
 )
 from langchain.chains.llm import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain.sql_database import SQLDatabase
+from langchain.sql_database import SQLLikeDatabase
 from langchain.tools.base import BaseTool
 from langchain.tools.sql_database.prompt import QUERY_CHECKER
 
@@ -19,7 +19,7 @@ from langchain.tools.sql_database.prompt import QUERY_CHECKER
 class BaseSQLDatabaseTool(BaseModel):
     """Base tool for interacting with a SQL database."""
 
-    db: SQLDatabase = Field(exclude=True)
+    db: SQLLikeDatabase = Field(exclude=True)
 
     # Override BaseTool.Config to appease mypy
     # See https://github.com/pydantic/pydantic/issues/4173
